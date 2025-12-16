@@ -1,0 +1,7 @@
+python-telegram-bot>=20.0
+firebase-admin
+google-play-scraper
+flask
+requests
+pytz
+google-genai
