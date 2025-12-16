@@ -18,7 +18,15 @@ from telegram.ext import (
 )
 from google_play_scraper import Sort, reviews as play_reviews
 from flask import Flask
-import google.generativeai as genai
+
+# --- AI Import Safeguard ---
+try:
+    import google.generativeai as genai
+    AI_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Google AI Library Error (Skipping AI features): {e}")
+    AI_AVAILABLE = False
+    genai = None
 
 # ==========================================
 # 1. কনফিগারেশন এবং সেটআপ
@@ -32,20 +40,20 @@ logger = logging.getLogger(__name__)
 
 # ENV ভেরিয়েবল
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-OWNER_ID = os.environ.get("OWNER_ID", "") # শুধু সংখ্যা হতে হবে, যেমন "12345678"
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "") # পাবলিক গ্রুপ আইডি
+OWNER_ID = os.environ.get("OWNER_ID", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
 
 # Gemini AI সেটআপ
 model = None
-if GEMINI_API_KEY:
+if AI_AVAILABLE and GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
     except Exception as e:
-        logger.error(f"Gemini AI Error: {e}")
+        logger.error(f"Gemini AI Config Error: {e}")
 
 # Firebase কানেকশন
 if not firebase_admin._apps:
@@ -80,20 +88,20 @@ DEFAULT_CONFIG = {
         "refer": {"text": "📢 রেফার", "show": True},
         "schedule": {"text": "📅 সময়সূচী", "show": True}
     },
-    "custom_buttons": [] # List of {"text": "Name", "url": "link"}
+    "custom_buttons": [] 
 }
 
-# Conversation States
+# Conversation States (Total 20 Variables)
 (
-    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS, # Task Submission
-    ADD_APP_ID, ADD_APP_NAME, # Add App
-    WD_METHOD, WD_NUMBER, WD_AMOUNT, # Withdraw
-    REMOVE_APP_SELECT, # Remove App
-    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT, # Admin User Manage
-    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL, # Edit Texts
-    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME, # Edit Buttons
-    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK # Add Custom Button
-) = range(18)
+    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 1-5
+    ADD_APP_ID, ADD_APP_NAME,                                       # 6-7
+    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                # 8-10
+    REMOVE_APP_SELECT,                                              # 11
+    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        # 12-14
+    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,                       # 15-16
+    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        # 17-18
+    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK                          # 19-20
+) = range(20) # Must match the number of variables exactly
 
 # ==========================================
 # 3. হেল্পার ফাংশন
@@ -105,7 +113,6 @@ def get_config():
         doc = ref.get()
         if doc.exists:
             data = doc.to_dict()
-            # Merge with default to avoid missing keys
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
@@ -185,7 +192,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     referrer = args[0] if args and args[0].isdigit() else None
     create_user(user.id, user.first_name, referrer)
     
-    # Check block
     db_user = get_user(user.id)
     if db_user and db_user.get('is_blocked'):
         await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
@@ -201,7 +207,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = []
-    # Dynamic Buttons
     row1 = []
     if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
     if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
@@ -216,7 +221,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     if row3: keyboard.append(row3)
 
-    # Custom Link Buttons
     custom_btns = config.get('custom_buttons', [])
     for btn in custom_btns:
         keyboard.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
@@ -297,10 +301,8 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।")
             return ConversationHandler.END
 
-        # Deduct balance immediately
         db.collection('users').document(user_id).update({"balance": firestore.Increment(-amount)})
         
-        # Create Request
         wd_ref = db.collection('withdrawals').add({
             "user_id": user_id,
             "user_name": update.effective_user.first_name,
@@ -311,7 +313,6 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "time": datetime.now()
         })
         
-        # Notify Admin with Action Buttons
         wd_id = wd_ref[1].id
         admin_msg = (
             f"💸 **New Withdrawal Request**\n"
@@ -325,7 +326,6 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ Reject (Refund)", callback_data=f"wd_rej_{wd_id}_{user_id}")]
         ])
         
-        # Send to Owner directly
         if OWNER_ID:
             await context.bot.send_message(chat_id=OWNER_ID, text=admin_msg, reply_markup=kb, parse_mode="Markdown")
 
@@ -344,7 +344,7 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
     if not is_admin(query.from_user.id): return
     
     data = query.data.split('_')
-    action = data[1] # apr or rej
+    action = data[1]
     wd_id = data[2]
     user_id = data[3]
     
@@ -359,12 +359,10 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
     if action == "apr":
         db.collection('withdrawals').document(wd_id).update({"status": "approved"})
         await query.edit_message_text(f"✅ Approved Withdrawal for {user_id} (৳{amount})")
-        # Notify User
         await context.bot.send_message(chat_id=user_id, text=f"✅ আপনার ৳{amount} উইথড্র সফল হয়েছে!")
         
     elif action == "rej":
         db.collection('withdrawals').document(wd_id).update({"status": "rejected"})
-        # Refund
         db.collection('users').document(user_id).update({"balance": firestore.Increment(amount)})
         await query.edit_message_text(f"❌ Rejected & Refunded for {user_id} (৳{amount})")
         await context.bot.send_message(chat_id=user_id, text=f"❌ আপনার ৳{amount} উইথড্র বাতিল হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।")
@@ -443,7 +441,7 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ==========================================
-# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন (আপডেটেড)
+# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন
 # ==========================================
 
 def approve_task(task_id, user_id, amount):
@@ -459,7 +457,7 @@ def approve_task(task_id, user_id, amount):
     return False
 
 def run_automation():
-    logger.info("Automation Started with 48h restriction...")
+    logger.info("Automation Started...")
     while True:
         try:
             config = get_config()
@@ -467,23 +465,16 @@ def run_automation():
             
             for app in apps:
                 try:
-                    # Get newest reviews
                     reviews, _ = play_reviews(app['id'], count=40, sort=Sort.NEWEST)
                     
                     for r in reviews:
                         rid = r['reviewId']
                         
-                        # Check duplication
                         if not db.collection('seen_reviews').document(rid).get().exists:
-                            
-                            # Format Date
-                            r_date = r['at'] # datetime object
+                            r_date = r['at']
                             date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
-                            
-                            # AI Summary
                             ai_txt = get_ai_summary(r['content'], r['score'])
                             
-                            # Highlighted Message
                             msg = (
                                 f"🔔 **নতুন রিভিউ!**\n\n"
                                 f"📱 অ্যাপ: `{app['name']}`\n"
@@ -494,43 +485,25 @@ def run_automation():
                                 f"🤖 AI মুড: {ai_txt}"
                             )
                             send_telegram_message(msg)
-                            
-                            # Mark seen
                             db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
 
-                            # --- AUTO APPROVE LOGIC (Strict 48 Hours) ---
-                            # Check if review is within last 48 hours
                             if r_date >= datetime.now() - timedelta(hours=48):
-                                # Find pending tasks for this app
                                 p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
-                                
                                 for t in p_tasks:
                                     td = t.to_dict()
-                                    # Name Match Check (Case Insensitive)
                                     if td['review_name'].lower().strip() == r['userName'].lower().strip():
                                         if r['score'] == 5:
                                             if approve_task(t.id, td['user_id'], td['price']):
-                                                # Send success to Admin/Group or User
                                                 send_telegram_message(f"🎉 **Auto Approved!**\nUser: `{td['user_id']}`\nName: {td['review_name']}")
-                                                # Optional: notify user directly via bot if needed
-                                        else:
-                                            # Optional: Reject if not 5 star? Or leave pending.
-                                            pass
                                         break
-                            else:
-                                # Review is older than 48 hours, ignore for auto-approve
-                                pass
-
                 except Exception as e:
-                    logger.error(f"App Check Error ({app.get('name')}): {e}")
-                    
+                    logger.error(f"App Check Error: {e}")
         except Exception as e:
             logger.error(f"Loop Error: {e}")
-            
-        time.sleep(300) # 5 Minutes
+        time.sleep(300)
 
 # ==========================================
-# 6. এডমিন প্যানেল (ম্যাসিভ আপডেট)
+# 6. এডমিন প্যানেল
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -544,14 +517,11 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- Admin Sub Menus ---
-
 async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     
     if data == "adm_users":
-        # Show stats
         users = db.collection('users').stream()
         total_u = 0
         total_bal = 0.0
@@ -562,7 +532,7 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg = (
             f"📊 **Statistics**\n\n"
             f"👥 Total Users: `{total_u}`\n"
-            f"💰 Total Liability (User Bal): `৳{total_bal:.2f}`\n\n"
+            f"💰 Total Liability: `৳{total_bal:.2f}`\n\n"
             "Select Action:"
         )
         kb = [[InlineKeyboardButton("🔍 Manage Specific User", callback_data="find_user")],
@@ -588,8 +558,6 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
         ]
         await query.edit_message_text("🎨 **Content Management**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-# --- User Management Logic ---
 
 async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
@@ -663,8 +631,6 @@ async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Invalid Amount.")
     return ConversationHandler.END
 
-# --- Content Editing (Text & Bonus) ---
-
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     key_map = {"ed_txt_rules": "rules_text", "ed_txt_schedule": "schedule_text", "set_ref_bonus": "referral_bonus"}
@@ -690,14 +656,11 @@ async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Saved!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
 
-# --- Button Editing ---
-
 async def edit_buttons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     config = get_config()
     btns = config.get('buttons', DEFAULT_CONFIG['buttons'])
     
-    # Create menu to toggle show/hide or rename
     kb = []
     for key, data in btns.items():
         status = "✅" if data['show'] else "❌"
@@ -722,7 +685,7 @@ async def button_action_handler(update: Update, context: ContextTypes.DEFAULT_TY
         curr = config['buttons'][key]['show']
         config['buttons'][key]['show'] = not curr
         update_config({"buttons": config['buttons']})
-        await edit_buttons_menu(update, context) # Refresh
+        await edit_buttons_menu(update, context)
         
     elif data.startswith("btnren_"):
         context.user_data['ren_key'] = data.split("_")[1]
@@ -737,8 +700,6 @@ async def button_rename_save(update: Update, context: ContextTypes.DEFAULT_TYPE)
     update_config({"buttons": config['buttons']})
     await update.message.reply_text("✅ Renamed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
-
-# --- Add Custom Button ---
 
 async def add_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("Enter Button Name:")
@@ -760,8 +721,6 @@ async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
-
-# --- App Management (Legacy + Update) ---
 
 async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("App Package ID (e.g. com.example.app):")
@@ -821,30 +780,19 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 def main():
-    # Start Flask
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Start Automation
     threading.Thread(target=run_automation, daemon=True).start()
 
-    # Bot Setup
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers
     application.add_handler(CommandHandler("start", start))
     
-    # Admin Panel Callback
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content)$"))
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
     application.add_handler(CallbackQueryHandler(button_action_handler, pattern="^(btntog_|btnren_)"))
-    
-    # Withdrawal Actions
     application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
 
-    # Conversations
-    
-    # 1. Task Submission
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_task_submission, pattern="^submit_task$")],
         states={
@@ -857,7 +805,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
     
-    # 2. Withdrawal
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_start, pattern="^start_withdraw$")],
         states={
@@ -868,7 +815,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
     
-    # 3. Add App
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_app_start, pattern="^add_app$")],
         states={
@@ -878,14 +824,12 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
     
-    # 4. Remove App
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(rmv_app_start, pattern="^rmv_app$")],
         states={REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_sel)]},
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
     
-    # 5. Manage User
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(find_user_start, pattern="^find_user$")],
         states={
@@ -896,11 +840,10 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
     
-    # 6. Edit Texts/Bonus/Button Names
     application.add_handler(ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_|set_ref)"),
-            CallbackQueryHandler(edit_buttons_menu, pattern="^btnren_") # Re-entry for rename
+            CallbackQueryHandler(edit_buttons_menu, pattern="^btnren_")
         ],
         states={
             ADMIN_EDIT_TEXT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text_save)],
@@ -909,7 +852,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
     
-    # 7. Add Custom Button
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_custom_btn_start, pattern="^add_cus_btn$")],
         states={
@@ -919,7 +861,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
-    # Common Callbacks
     application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule)$"))
 
     print("🚀 Bot Started on Render...")
