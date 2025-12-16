@@ -72,8 +72,9 @@ DEFAULT_CONFIG = {
 (
     TASK_NAME, TASK_EMAIL, TASK_DEVICE, TASK_SS,
     ADMIN_APP_NAME, ADMIN_APP_ID,
-    WITHDRAW_AMOUNT, WITHDRAW_NUMBER, WITHDRAW_METHOD
-) = range(9)
+    WITHDRAW_AMOUNT, WITHDRAW_NUMBER, WITHDRAW_METHOD,
+    ADMIN_DELETE_APP_SELECT  # নতুন স্টেজ যোগ করা হয়েছে
+) = range(10)
 
 # ==========================================
 # 3. ডাটাবেস হেল্পার ফাংশন
@@ -248,12 +249,10 @@ def run_automation_and_alerts():
         time.sleep(300)
 
 # ==========================================
-# 5. মেইন মেনু ডিসপ্লে ফাংশন (Fix for 'back_home')
+# 5. মেইন মেনু ডিসপ্লে ফাংশন
 # ==========================================
 
 async def display_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, user_name):
-    """স্টার্ট এবং ব্যাক বাটন উভয় থেকেই মেইন মেনু ডিসপ্লে করবে"""
-    
     keyboard = [
         [InlineKeyboardButton("💰 কাজ জমা দিন", callback_data="submit_task"),
          InlineKeyboardButton("👤 আমার একাউন্ট", callback_data="my_profile")],
@@ -264,25 +263,15 @@ async def display_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         keyboard.append([InlineKeyboardButton("⚙️ এডমিন প্যানেল", callback_data="admin_panel")])
 
     if update.callback_query:
-        # Callback থেকে এলে মেসেজ এডিট করবে
-        await update.callback_query.edit_message_text(
-            "প্রধান মেনু:", 
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await update.callback_query.edit_message_text("প্রধান মেনু:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        # Command (/start) থেকে এলে নতুন মেসেজ পাঠাবে
-        await update.message.reply_text(
-            f"আসসালামু আলাইকুম, {user_name}! আমাদের রিভিউ বটে স্বাগতম।", 
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await update.message.reply_text(f"আসসালামু আলাইকুম, {user_name}! আমাদের রিভিউ বটে স্বাগতম।", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     args = context.args
     referrer = args[0] if args and args[0].isdigit() else None
     create_user(user.id, user.first_name, referrer)
-    
-    # নতুন ডিসপ্লে ফাংশন ব্যবহার
     await display_main_menu(update, context, user.id, user.first_name)
 
 
@@ -303,7 +292,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
 
     elif query.data == "back_home":
-        # FIXED: সরাসরি display_main_menu ফাংশনকে কল করা হয়েছে
         await display_main_menu(update, context, user_id, query.from_user.first_name)
 
 
@@ -350,7 +338,6 @@ async def save_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     user_id = query.from_user.id
     
-    # ব্যালেন্স কাটা এবং রিকোয়েস্ট সেভ করা
     db.collection('users').document(str(user_id)).update({"balance": firestore.Increment(-data['w_amount'])})
     db.collection('withdraws').add({
         "user_id": user_id,
@@ -435,6 +422,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("➕ অ্যাপ অ্যাড করুন", callback_data="adm_add_app")],
+        [InlineKeyboardButton("🗑️ অ্যাপ মুছুন", callback_data="adm_del_app")], # ডিলিট বাটন যুক্ত হয়েছে
         [InlineKeyboardButton("📊 স্ট্যাটাস চেক", callback_data="adm_stats")],
         [InlineKeyboardButton("🔙 মেইন মেনু", callback_data="back_home")]
     ]
@@ -477,6 +465,48 @@ async def get_app_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ অ্যাপ যুক্ত হয়েছে:\nনাম: {name}\nআইডি: {app_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
     return ConversationHandler.END
 
+# --- Admin Delete App Conversation (নতুন যুক্ত করা হয়েছে) ---
+async def start_delete_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    config = get_config()
+    apps = config.get('monitored_apps', [])
+    
+    if not apps:
+        await query.edit_message_text("❌ ডিলিট করার মতো কোনো অ্যাপ নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+        
+    buttons = [[InlineKeyboardButton(f"🗑️ {app['name']}", callback_data=f"del_app_{app['id']}")] for app in apps]
+    buttons.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel_delete")])
+    
+    await query.edit_message_text("যে অ্যাপটি মুছতে চান সেটি সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+    return ADMIN_DELETE_APP_SELECT
+
+async def confirm_delete_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "cancel_delete":
+        await query.edit_message_text("অ্যাকশন বাতিল করা হয়েছে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+        
+    app_id_to_delete = query.data.split("del_app_")[1]
+    
+    # কনফিগারেশন আপডেট করা
+    config = get_config()
+    apps = config.get('monitored_apps', [])
+    
+    # অ্যাপটি লিস্ট থেকে বাদ দেওয়া হচ্ছে
+    new_apps = [app for app in apps if app['id'] != app_id_to_delete]
+    
+    if update_config('monitored_apps', new_apps):
+        await query.edit_message_text(f"✅ অ্যাপটি সফলভাবে মুছে ফেলা হয়েছে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+    else:
+        await query.edit_message_text(f"❌ ডাটাবেস এরর। আবার চেষ্টা করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin_panel")]]))
+        
+    return ConversationHandler.END
+
 # ==========================================
 # 7. রানার (Main Execution)
 # ==========================================
@@ -503,6 +533,8 @@ if __name__ == '__main__':
     # Handlers Registration
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(menu_handler, pattern="^(my_profile|refer_friend|back_home)$"))
+    
+    # Admin Panel Handlers
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(admin_stats, pattern="^adm_stats$"))
     
@@ -541,6 +573,19 @@ if __name__ == '__main__':
         fallbacks=[CallbackQueryHandler(admin_panel, pattern="^admin_panel$")]
     )
     application.add_handler(add_app_conv)
+    
+    # Admin Delete App Conversation (নতুন যুক্ত করা হয়েছে)
+    delete_app_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_delete_app, pattern="^adm_del_app$")],
+        states={
+            ADMIN_DELETE_APP_SELECT: [
+                CallbackQueryHandler(confirm_delete_app, pattern="^del_app_"),
+                CallbackQueryHandler(confirm_delete_app, pattern="^cancel_delete$")
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(admin_panel, pattern="^admin_panel$")]
+    )
+    application.add_handler(delete_app_conv)
     
     print("🤖 Bot is polling...")
     application.run_polling()
