@@ -212,7 +212,7 @@ def run_automation_and_alerts():
                                 send_telegram_message(msg, chat_id=TELEGRAM_CHAT_ID)
                                 seen_ref.set({"app_id": app['id'], "time": datetime.now()})
                     except Exception as e:
-                        print(f"Scraper Error ({app['name']}): {e}")
+                        print(f"Scraper Error ({app.get('name', 'N/A')}): {e}")
 
                 # 2. Task Verification Logic
                 for app in apps:
@@ -248,14 +248,11 @@ def run_automation_and_alerts():
         time.sleep(300)
 
 # ==========================================
-# 5. বট হ্যান্ডলার (User Side)
+# 5. মেইন মেনু ডিসপ্লে ফাংশন (Fix for 'back_home')
 # ==========================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    referrer = args[0] if args and args[0].isdigit() else None
-    create_user(user.id, user.first_name, referrer)
+async def display_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, user_name):
+    """স্টার্ট এবং ব্যাক বাটন উভয় থেকেই মেইন মেনু ডিসপ্লে করবে"""
     
     keyboard = [
         [InlineKeyboardButton("💰 কাজ জমা দিন", callback_data="submit_task"),
@@ -263,28 +260,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📢 রেফার করুন", callback_data="refer_friend"),
          InlineKeyboardButton("💸 উইথড্র", callback_data="withdraw_money")]
     ]
-    if is_admin(user.id):
+    if is_admin(user_id):
         keyboard.append([InlineKeyboardButton("⚙️ এডমিন প্যানেল", callback_data="admin_panel")])
 
-    await update.message.reply_text(f"আসসালামু আলাইকুম, {user.first_name}! আমাদের রিভিউ বটে স্বাগতম।", reply_markup=InlineKeyboardMarkup(keyboard))
+    if update.callback_query:
+        # Callback থেকে এলে মেসেজ এডিট করবে
+        await update.callback_query.edit_message_text(
+            "প্রধান মেনু:", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        # Command (/start) থেকে এলে নতুন মেসেজ পাঠাবে
+        await update.message.reply_text(
+            f"আসসালামু আলাইকুম, {user_name}! আমাদের রিভিউ বটে স্বাগতম।", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    args = context.args
+    referrer = args[0] if args and args[0].isdigit() else None
+    create_user(user.id, user.first_name, referrer)
+    
+    # নতুন ডিসপ্লে ফাংশন ব্যবহার
+    await display_main_menu(update, context, user.id, user.first_name)
+
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
     
     if query.data == "my_profile":
-        user = get_user(query.from_user.id)
+        user = get_user(user_id)
         msg = f"👤 আইডি: `{user['id']}`\n💰 ব্যালেন্স: ৳{user.get('balance', 0):.2f}\n✅ টাস্ক: {user.get('total_tasks', 0)}"
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
     
     elif query.data == "refer_friend":
         config = get_config()
-        link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
         msg = f"বোনাস: ৳{config.get('referral_bonus', 5)}\nলিংক:\n`{link}`"
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
 
     elif query.data == "back_home":
-        await start(update, context)
+        # FIXED: সরাসরি display_main_menu ফাংশনকে কল করা হয়েছে
+        await display_main_menu(update, context, user_id, query.from_user.first_name)
+
 
 # --- Withdraw Conversation ---
 async def start_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,7 +424,7 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ==========================================
-# 6. এডমিন প্যানেল হ্যান্ডলার (Full Features)
+# 6. এডমিন প্যানেল হ্যান্ডলার
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,10 +439,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 মেইন মেনু", callback_data="back_home")]
     ]
     msg = "⚙️ **এডমিন প্যানেল**"
+    
     if query:
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
