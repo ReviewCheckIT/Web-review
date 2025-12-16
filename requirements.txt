@@ -1,7 +1,8 @@
-python-telegram-bot>=20.0
+python-telegram-bot
 firebase-admin
 google-play-scraper
 flask
+google-generativeai
 requests
 pytz
-google-genai
+gunicorn
