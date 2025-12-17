@@ -24,7 +24,8 @@ try:
     import google.generativeai as genai
     AI_AVAILABLE = True
 except Exception as e:
-    print(f"⚠️ Google AI Library Error (Skipping AI features): {e}")
+    # Changed to logger.warning to distinguish from user errors
+    logging.warning(f"⚠️ Google AI Library Error (Skipping AI features): {e}")
     AI_AVAILABLE = False
     genai = None
 
@@ -342,7 +343,8 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_admin(query.from_user.id): return
-    
+    await query.answer() # Acknowledge callback
+
     data = query.data.split('_')
     action = data[1]
     wd_id = data[2]
@@ -507,7 +509,7 @@ def run_automation():
         time.sleep(300)
 
 # ==========================================
-# 6. এডমিন প্যানেল (নতুন ফিচার সহ)
+# 6. এডমিন প্যানেল (সংশোধিত)
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -516,7 +518,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = [
         [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
-        [InlineKeyboardButton("✅ View Pending Tasks", callback_data="adm_tasks")], # NEW BUTTON
+        [InlineKeyboardButton("✅ View Pending Tasks", callback_data="adm_tasks")], 
         [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("🎨 Buttons & Text", callback_data="adm_content")],
         [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
     ]
@@ -565,16 +567,28 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ]
         await query.edit_message_text("🎨 **Content Management**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- New: Task Management Handlers ---
+# --- Task Management Handlers (সংশোধিত: Callback Acknowledge যোগ করা হয়েছে) ---
 
 async def admin_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_admin(query.from_user.id): return
     
-    # Fetch pending tasks and sort by submission time
-    tasks = db.collection('tasks').where('status', '==', 'pending').order_by('submitted_at').limit(20).stream()
-    
-    task_list = list(tasks)
+    # CRITICAL FIX 1: Acknowledge the callback immediately to stop the loading spinner
+    await query.answer("পেন্ডিং কাজ লোড হচ্ছে...") 
+
+    try:
+        # Fetch pending tasks and sort by submission time
+        # NOTE: This query requires an index in Firestore: (status ASC, submitted_at ASC)
+        tasks = db.collection('tasks').where('status', '==', 'pending').order_by('submitted_at').limit(20).stream()
+        
+        task_list = list(tasks)
+    except Exception as e:
+        logger.error(f"Error fetching task list (Firebase Index/Permission Error): {e}")
+        # If the query fails (likely due to missing index), inform the admin
+        msg = "❌ টাস্ক লিস্ট ফেচ করতে সমস্যা হয়েছে। Firebase Index/Rules চেক করুন।"
+        kb = [[InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+        return
     
     if not task_list:
         msg = "🎉 কোনো পেন্ডিং কাজ নেই!"
@@ -591,10 +605,16 @@ async def admin_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for t in task_list:
         td = t.to_dict()
         app_name = app_map.get(td['app_id'], 'Unknown App')
-        submit_time = td['submitted_at'].strftime("%H:%M:%S")
         
-        msg += f"\n- {submit_time}: {app_name} | {td['review_name'][:20]}..."
-        kb.append([InlineKeyboardButton(f"👁️‍🗨️ {td['review_name']} ({app_name})", callback_data=f"task_details_{t.id}")])
+        # Ensure 'submitted_at' is available and convertible (Firestore Timestamp to datetime)
+        submitted_at = td.get('submitted_at')
+        submit_time = submitted_at.strftime("%H:%M:%S") if submitted_at else "N/A"
+        
+        # Ensure 'review_name' exists before slicing
+        review_name_short = td.get('review_name', 'No Name')[:20]
+        
+        msg += f"\n- {submit_time}: {app_name} | {review_name_short}..."
+        kb.append([InlineKeyboardButton(f"👁️‍🗨️ {td.get('review_name', 'No Name')} ({app_name})", callback_data=f"task_details_{t.id}")])
     
     kb.append([InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")])
     await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -602,6 +622,9 @@ async def admin_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_admin(query.from_user.id): return
+    
+    # CRITICAL FIX 2: Acknowledge the callback immediately
+    await query.answer("টাস্কের বিস্তারিত লোড হচ্ছে...") 
     
     task_id = query.data.split("task_details_")[1]
     task_doc = db.collection('tasks').document(task_id).get()
@@ -640,6 +663,8 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     if not is_admin(query.from_user.id): return
     
+    await query.answer() # Acknowledge callback immediately
+    
     data = query.data.split('_')
     action = data[1] # apr or rej
     task_id = data[3]
@@ -667,7 +692,7 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     await admin_task_list(update, context) # Go back to list after action
 
-# --- End New Task Management Handlers ---
+# --- End Task Management Handlers ---
 
 async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
@@ -890,19 +915,33 @@ def home(): return "Bot is Alive & Updated!"
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
-def main():
+# Asynchronous function to start polling
+async def start_bot_polling(application):
+    # --- CRITICAL FIX: Delete Webhook to avoid Conflict Error ---
+    try:
+        await application.bot.delete_webhook()
+        logger.info("Existing webhook cleared successfully.")
+    except Exception as e:
+        logger.warning(f"Failed to clear webhook (Harmless if polling is running): {e}")
+        
+    print("🚀 Bot Polling Started...")
+    await application.run_polling(drop_pending_updates=True)
+
+def main_sync():
+    # Start background threads (Flask and Automation)
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Thread(target=run_automation, daemon=True).start()
 
+    # Build the Application
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # Define Handlers
     application.add_handler(CommandHandler("start", start))
     
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    # Updated: Added adm_tasks
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content)$"))
     
-    # New Task Management Handlers
+    # Task Management Handlers
     application.add_handler(CallbackQueryHandler(admin_task_list, pattern="^adm_tasks$"))
     application.add_handler(CallbackQueryHandler(admin_task_details, pattern="^task_details_"))
     application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^task_(apr|rej)_t_"))
@@ -981,8 +1020,8 @@ def main():
 
     application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule)$"))
 
-    print("🚀 Bot Started on Render...")
-    application.run_polling(drop_pending_updates=True)
+    # Start the async polling process
+    asyncio.run(start_bot_polling(application))
 
 if __name__ == '__main__':
-    main()
+    main_sync()
