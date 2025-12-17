@@ -231,9 +231,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
-        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
     else:
-        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+        await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -418,6 +418,7 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     config = get_config()
     
+    # Save the task to Firestore
     db.collection('tasks').add({
         "user_id": str(update.effective_user.id),
         "app_id": data['tid'],
@@ -444,10 +445,10 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 5. অটোমেশন ও গ্রুপ নোটিফিকেশন
 # ==========================================
 
-def approve_task(task_id, user_id, amount):
+def approve_task_logic(task_id, user_id, amount):
     task_ref = db.collection('tasks').document(task_id)
     t_data = task_ref.get().to_dict()
-    if t_data['status'] == 'pending':
+    if t_data and t_data['status'] == 'pending':
         task_ref.update({"status": "approved", "approved_at": datetime.now()})
         db.collection('users').document(str(user_id)).update({
             "balance": firestore.Increment(amount),
@@ -465,11 +466,13 @@ def run_automation():
             
             for app in apps:
                 try:
+                    # Fetch only top 40 reviews
                     reviews, _ = play_reviews(app['id'], count=40, sort=Sort.NEWEST)
                     
                     for r in reviews:
                         rid = r['reviewId']
                         
+                        # New Review Notification Logic
                         if not db.collection('seen_reviews').document(rid).get().exists:
                             r_date = r['at']
                             date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
@@ -487,13 +490,14 @@ def run_automation():
                             send_telegram_message(msg)
                             db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
 
+                            # Auto-Approval Logic (Within 48 hours and 5-star)
                             if r_date >= datetime.now() - timedelta(hours=48):
                                 p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
                                 for t in p_tasks:
                                     td = t.to_dict()
                                     if td['review_name'].lower().strip() == r['userName'].lower().strip():
                                         if r['score'] == 5:
-                                            if approve_task(t.id, td['user_id'], td['price']):
+                                            if approve_task_logic(t.id, td['user_id'], td['price']):
                                                 send_telegram_message(f"🎉 **Auto Approved!**\nUser: `{td['user_id']}`\nName: {td['review_name']}")
                                         break
                 except Exception as e:
@@ -503,7 +507,7 @@ def run_automation():
         time.sleep(300)
 
 # ==========================================
-# 6. এডমিন প্যানেল
+# 6. এডমিন প্যানেল (নতুন ফিচার সহ)
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -512,6 +516,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = [
         [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
+        [InlineKeyboardButton("✅ View Pending Tasks", callback_data="adm_tasks")], # NEW BUTTON
         [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("🎨 Buttons & Text", callback_data="adm_content")],
         [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
     ]
@@ -541,8 +546,9 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "adm_finance":
         config = get_config()
-        msg = f"💸 **Finance Config**\n\nCurrent Refer Bonus: ৳{config['referral_bonus']}\nMin Withdraw: ৳{config['min_withdraw']}"
-        kb = [[InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="set_ref_bonus")],
+        msg = f"💸 **Finance Config**\n\nTask Price: ৳{config['task_price']}\nRefer Bonus: ৳{config['referral_bonus']}\nMin Withdraw: ৳{config['min_withdraw']}"
+        kb = [[InlineKeyboardButton("✏️ Change Task Price", callback_data="ed_txt_task_price")],
+              [InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="set_ref_bonus")],
               [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         
@@ -558,6 +564,110 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
         ]
         await query.edit_message_text("🎨 **Content Management**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# --- New: Task Management Handlers ---
+
+async def admin_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(query.from_user.id): return
+    
+    # Fetch pending tasks and sort by submission time
+    tasks = db.collection('tasks').where('status', '==', 'pending').order_by('submitted_at').limit(20).stream()
+    
+    task_list = list(tasks)
+    
+    if not task_list:
+        msg = "🎉 কোনো পেন্ডিং কাজ নেই!"
+        kb = [[InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    msg = "✅ **পেন্ডিং কাজের তালিকা (সর্বশেষ ২০টি):**\n"
+    kb = []
+    
+    config = get_config()
+    app_map = {app['id']: app['name'] for app in config['monitored_apps']}
+    
+    for t in task_list:
+        td = t.to_dict()
+        app_name = app_map.get(td['app_id'], 'Unknown App')
+        submit_time = td['submitted_at'].strftime("%H:%M:%S")
+        
+        msg += f"\n- {submit_time}: {app_name} | {td['review_name'][:20]}..."
+        kb.append([InlineKeyboardButton(f"👁️‍🗨️ {td['review_name']} ({app_name})", callback_data=f"task_details_{t.id}")])
+    
+    kb.append([InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")])
+    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+async def admin_task_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(query.from_user.id): return
+    
+    task_id = query.data.split("task_details_")[1]
+    task_doc = db.collection('tasks').document(task_id).get()
+    
+    if not task_doc.exists:
+        await query.answer("❌ টাস্কটি পাওয়া যায়নি বা মুছে ফেলা হয়েছে।", show_alert=True)
+        return await admin_task_list(update, context)
+
+    td = task_doc.to_dict()
+    config = get_config()
+    app_map = {app['id']: app['name'] for app in config['monitored_apps']}
+    app_name = app_map.get(td['app_id'], 'Unknown App')
+    
+    msg = (
+        f"📝 **টাস্ক ডিটেইলস (ID: `{task_id}`)**\n\n"
+        f"📱 অ্যাপ: `{app_name}`\n"
+        f"👤 ইউজার ID: `{td['user_id']}`\n"
+        f"💰 পাবে: ৳{td['price']:.2f}\n"
+        f"---"
+        f"\n**জমা দেওয়া তথ্য:**\n"
+        f"✍️ রিভিউ নাম: **{td['review_name']}**\n"
+        f"📧 ইমেইল: `{td['email']}`\n"
+        f"⚙️ ডিভাইস: `{td['device']}`\n"
+        f"🔗 স্ক্রিনশট লিংক: [Click to View]({td['screenshot']})\n"
+        f"---"
+        f"\n**স্ট্যাটাস:** `{td['status']}`"
+    )
+    
+    kb = [[InlineKeyboardButton("✅ Approve & Pay", callback_data=f"task_apr_t_{task_id}"), 
+           InlineKeyboardButton("❌ Reject (Wrong Info)", callback_data=f"task_rej_t_{task_id}")],
+          [InlineKeyboardButton("🔙 Task List", callback_data="adm_tasks")]]
+          
+    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(query.from_user.id): return
+    
+    data = query.data.split('_')
+    action = data[1] # apr or rej
+    task_id = data[3]
+    
+    task_doc = db.collection('tasks').document(task_id).get()
+    if not task_doc.exists or task_doc.to_dict()['status'] != 'pending':
+        await query.answer("Already processed", show_alert=True)
+        return await admin_task_list(update, context)
+
+    td = task_doc.to_dict()
+    user_id = td['user_id']
+    amount = td['price']
+
+    if action == "apr":
+        if approve_task_logic(task_id, user_id, amount):
+            await query.edit_message_text(f"✅ টাস্ক অ্যাপ্রুভড! (৳{amount} Added to {user_id})")
+            await context.bot.send_message(chat_id=user_id, text=f"🎉 আপনার `{td['review_name']}` নামের কাজটি অ্যাপ্রুভ করা হয়েছে! আপনার ব্যালেন্সে ৳{amount} যোগ হয়েছে।")
+        else:
+            await query.answer("❌ Error during approval.", show_alert=True)
+        
+    elif action == "rej":
+        db.collection('tasks').document(task_id).update({"status": "rejected", "rejected_at": datetime.now()})
+        await query.edit_message_text(f"❌ টাস্ক রিজেক্টেড! ({user_id})")
+        await context.bot.send_message(chat_id=user_id, text=f"❌ দুঃখিত, আপনার `{td['review_name']}` নামের কাজটি বাতিল করা হয়েছে। ভুল তথ্যের জন্য আবার চেষ্টা করুন।")
+        
+    await admin_task_list(update, context) # Go back to list after action
+
+# --- End New Task Management Handlers ---
 
 async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
@@ -633,7 +743,8 @@ async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    key_map = {"ed_txt_rules": "rules_text", "ed_txt_schedule": "schedule_text", "set_ref_bonus": "referral_bonus"}
+    # Added 'ed_txt_task_price' to key_map
+    key_map = {"ed_txt_rules": "rules_text", "ed_txt_schedule": "schedule_text", "set_ref_bonus": "referral_bonus", "ed_txt_task_price": "task_price"}
     
     key = key_map.get(query.data)
     if not key: return ConversationHandler.END
@@ -646,7 +757,7 @@ async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text
     key = context.user_data['edit_key']
     
-    if key == "referral_bonus":
+    if key in ["referral_bonus", "task_price"]:
         try: val = float(val)
         except: 
             await update.message.reply_text("❌ Must be a number")
@@ -788,7 +899,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    # Updated: Added adm_tasks
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content)$"))
+    
+    # New Task Management Handlers
+    application.add_handler(CallbackQueryHandler(admin_task_list, pattern="^adm_tasks$"))
+    application.add_handler(CallbackQueryHandler(admin_task_details, pattern="^task_details_"))
+    application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^task_(apr|rej)_t_"))
+    
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
     application.add_handler(CallbackQueryHandler(button_action_handler, pattern="^(btntog_|btnren_)"))
     application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
