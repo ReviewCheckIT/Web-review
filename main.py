@@ -17,6 +17,8 @@ from telegram.ext import (
     MessageHandler, filters, ConversationHandler
 )
 from google_play_scraper import Sort, reviews as play_reviews
+
+# Flask
 from flask import Flask
 
 # --- AI Import Safeguard ---
@@ -52,7 +54,8 @@ model = None
 if AI_AVAILABLE and GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Note: If gemini-2.5-flash is not available, try gemini-1.5-flash
+        model = genai.GenerativeModel('gemini-1.5-flash') 
     except Exception as e:
         logger.error(f"Gemini AI Config Error: {e}")
 
@@ -328,7 +331,8 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         if OWNER_ID:
-            await context.bot.send_message(chat_id=OWNER_ID, text=admin_msg, reply_markup=kb, parse_mode="Markdown")
+            # Changed to sync send_telegram_message for potential sync/async conflict in other threads
+            send_telegram_message(admin_msg, chat_id=OWNER_ID, reply_markup=kb)
 
         await update.message.reply_text("✅ উইথড্র রিকোয়েস্ট সফল হয়েছে! এডমিন চেক করে পেমেন্ট করবে।")
         
@@ -477,7 +481,12 @@ def run_automation():
                         # New Review Notification Logic
                         if not db.collection('seen_reviews').document(rid).get().exists:
                             r_date = r['at']
-                            date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
+                            # Ensure r_date is a datetime object
+                            if isinstance(r_date, datetime):
+                                date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
+                            else:
+                                date_str = "N/A"
+                                
                             ai_txt = get_ai_summary(r['content'], r['score'])
                             
                             msg = (
@@ -493,7 +502,8 @@ def run_automation():
                             db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
 
                             # Auto-Approval Logic (Within 48 hours and 5-star)
-                            if r_date >= datetime.now() - timedelta(hours=48):
+                            # Check date difference only if r_date is a datetime object
+                            if isinstance(r_date, datetime) and r_date >= datetime.now() - timedelta(hours=48):
                                 p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
                                 for t in p_tasks:
                                     td = t.to_dict()
@@ -608,8 +618,12 @@ async def admin_task_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Ensure 'submitted_at' is available and convertible (Firestore Timestamp to datetime)
         submitted_at = td.get('submitted_at')
-        submit_time = submitted_at.strftime("%H:%M:%S") if submitted_at else "N/A"
-        
+        # Check if submitted_at is a Firestore Timestamp object before calling strftime
+        if isinstance(submitted_at, datetime):
+            submit_time = submitted_at.strftime("%H:%M:%S")
+        else:
+            submit_time = "N/A"
+            
         # Ensure 'review_name' exists before slicing
         review_name_short = td.get('review_name', 'No Name')[:20]
         
@@ -905,7 +919,7 @@ async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ==========================================
-# 7. মেইন রানার
+# 7. মেইন রানার (FIXED: Asyncio conflict resolved)
 # ==========================================
 
 app = Flask(__name__)
@@ -913,19 +927,8 @@ app = Flask(__name__)
 def home(): return "Bot is Alive & Updated!"
 
 def run_flask():
+    # Flask is run in a separate thread.
     app.run(host='0.0.0.0', port=PORT)
-
-# Asynchronous function to start polling
-async def start_bot_polling(application):
-    # --- CRITICAL FIX: Delete Webhook to avoid Conflict Error ---
-    try:
-        await application.bot.delete_webhook()
-        logger.info("Existing webhook cleared successfully.")
-    except Exception as e:
-        logger.warning(f"Failed to clear webhook (Harmless if polling is running): {e}")
-        
-    print("🚀 Bot Polling Started...")
-    await application.run_polling(drop_pending_updates=True)
 
 def main_sync():
     # Start background threads (Flask and Automation)
@@ -1020,8 +1023,9 @@ def main_sync():
 
     application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule)$"))
 
-    # Start the async polling process
-    asyncio.run(start_bot_polling(application))
+    # FIX: Use application.run_polling() directly. It manages the event loop correctly.
+    print("🚀 Bot Polling Started...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main_sync()
