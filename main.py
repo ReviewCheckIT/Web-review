@@ -6,7 +6,7 @@ import time
 import asyncio
 import csv
 import io
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     "custom_buttons": [] 
 }
 
-# Conversation States
+# Conversation States - (FIXED RANGE HERE)
 (
     T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 1-5
     ADD_APP_ID, ADD_APP_NAME,                                       # 6-7
@@ -107,8 +107,8 @@ DEFAULT_CONFIG = {
     ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         # 19-20
     ADMIN_SET_LOG_CHANNEL,                                          # 21
     ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 22-23
-    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME                        # 24-25 (New for Time Settings)
-) = range(26)
+    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME                        # 24-25
+) = range(25)  # FIXED: Changed from 26 to 25
 
 # ==========================================
 # 3. হেল্পার ফাংশন
