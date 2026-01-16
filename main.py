@@ -20,6 +20,7 @@ from telegram.ext import (
 )
 from google_play_scraper import Sort, reviews as play_reviews
 from flask import Flask
+import pytz  # বাংলাদেশ টাইমের জন্য নতুন যুক্ত করা হয়েছে
 
 # --- AI Import Safeguard ---
 try:
@@ -34,10 +35,16 @@ except Exception as e:
 # 1. কনফিগারেশন এবং সেটআপ
 # ==========================================
 
+# বাংলাদেশ টাইমজোন সেটআপ
+BD_TZ = pytz.timezone('Asia/Dhaka')
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+# লগিং টাইম বাংলাদেশ টাইমে দেখানোর জন্য
+logging.Formatter.converter = lambda *args: datetime.now(BD_TZ).timetuple()
+
 logger = logging.getLogger(__name__)
 
 # ENV ভেরিয়েবল
@@ -81,8 +88,8 @@ DEFAULT_CONFIG = {
     "min_withdraw": 50.0,
     "monitored_apps": [],
     "log_channel_id": "",
-    "work_start_time": "15:30", # 24H Format
-    "work_end_time": "23:00",   # 24H Format
+    "work_start_time": "15:30", # 24H Format (3:30 PM BD Time)
+    "work_end_time": "23:00",   # 24H Format (11:00 PM BD Time)
     "rules_text": "⚠️ কাজের নিয়ম: ভিডিওতে দেখানো হয়েছে ভিডিওটি দেখে নিন।",
     "schedule_text": "⏰ কাজের সময়: বিকেল 03:30 PM To 11:00 PM।",
     "buttons": {
@@ -95,20 +102,20 @@ DEFAULT_CONFIG = {
     "custom_buttons": [] 
 }
 
-# Conversation States - (FIXED RANGE HERE)
+# Conversation States
 (
-    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 1-5
-    ADD_APP_ID, ADD_APP_NAME,                                       # 6-7
-    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                # 8-10
-    REMOVE_APP_SELECT,                                              # 11
-    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        # 12-14
-    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,                       # 15-16
-    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        # 17-18
-    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         # 19-20
-    ADMIN_SET_LOG_CHANNEL,                                          # 21
-    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 22-23
-    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME                        # 24-25
-) = range(25)  # FIXED: Changed from 26 to 25
+    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           
+    ADD_APP_ID, ADD_APP_NAME,                                       
+    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                
+    REMOVE_APP_SELECT,                                              
+    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        
+    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,                       
+    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        
+    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         
+    ADMIN_SET_LOG_CHANNEL,                                          
+    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         
+    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME                        
+) = range(25) 
 
 # ==========================================
 # 3. হেল্পার ফাংশন
@@ -137,21 +144,23 @@ def update_config(data):
         logger.error(f"Config Update Error: {e}")
 
 def is_working_hour():
+    """চেক করে বর্তমান সময় বাংলাদেশ টাইম অনুযায়ী কাজের সময় কিনা"""
     config = get_config()
     start_str = config.get("work_start_time", "15:30")
     end_str = config.get("work_end_time", "23:00")
     
     try:
-        now = datetime.now().time()
+        # এখানে BD_TZ ব্যবহার করা হয়েছে
+        now = datetime.now(BD_TZ).time()
         start = datetime.strptime(start_str, "%H:%M").time()
         end = datetime.strptime(end_str, "%H:%M").time()
         
         if start < end:
             return start <= now <= end
-        else: # Crosses midnight (e.g. 03:30 PM to 11:00 PM)
+        else: # Crosses midnight
             return now >= start or now <= end
     except:
-        return True # Fallback if time format error
+        return True 
 
 def is_admin(user_id):
     if str(user_id) == str(OWNER_ID): return True
@@ -175,7 +184,7 @@ def create_user(user_id, first_name, referrer_id=None):
                 "name": first_name,
                 "balance": 0.0,
                 "total_tasks": 0,
-                "joined_at": datetime.now(),
+                "joined_at": datetime.now(BD_TZ), # BD Time
                 "referrer": referrer_id if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id) else None,
                 "is_blocked": False,
                 "is_admin": str(user_id) == str(OWNER_ID)
@@ -283,7 +292,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"📅 **সময়সূচী:**\n\n"
             f"{config.get('schedule_text', '')}\n\n"
-            f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
+            f"🕒 **কাজ জমা দেওয়ার সময় (BD Time):**\n"
             f"শুরু: `{s_time}`\n"
             f"শেষ: `{e_time}`"
         )
@@ -348,7 +357,7 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "method": context.user_data['wd_method'],
             "number": context.user_data['wd_number'],
             "status": "pending",
-            "time": datetime.now()
+            "time": datetime.now(BD_TZ) # BD Time
         })
         
         wd_id = wd_ref[1].id
@@ -358,7 +367,8 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 User: `{user_id}` ({update.effective_user.first_name})\n"
             f"💰 Amount: ৳{amount:.2f}\n"
             f"📱 Method: {context.user_data['wd_method']} ({context.user_data['wd_number']})\n"
-            f"🔢 Balance Left: ৳{user['balance'] - amount:.2f}"
+            f"🔢 Balance Left: ৳{user['balance'] - amount:.2f}\n"
+            f"🕒 Time: {datetime.now(BD_TZ).strftime('%d-%m-%Y %I:%M %p')}"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Approve", callback_data=f"wd_apr_{wd_id}_{user_id}"), 
@@ -418,10 +428,10 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     config = get_config()
     
-    # --- TIME CHECK START ---
+    # --- TIME CHECK START (BD Time) ---
     if not is_working_hour():
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%I:%M %p").strftime("%H:%M")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%I:%M %p").strftime("%H:%M")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
         await query.edit_message_text(
             f"⛔ **এখন কাজের সময় নয়!**\n\n"
@@ -490,7 +500,7 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "device": data['dev'],
         "screenshot": update.message.text,
         "status": "pending",
-        "submitted_at": datetime.now(),
+        "submitted_at": datetime.now(BD_TZ), # BD Time
         "price": config['task_price']
     })
     
@@ -504,7 +514,8 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📧 Email: {data['email']}\n"
         f"📱 Device: {data['dev']}\n"
         f"🖼 Proof: [Link/Text]({update.message.text})\n"
-        f"💰 Price: ৳{config['task_price']:.2f}"
+        f"💰 Price: ৳{config['task_price']:.2f}\n"
+        f"🕒 Time: {datetime.now(BD_TZ).strftime('%I:%M %p')}"
     )
     
     kb = InlineKeyboardMarkup([
@@ -571,7 +582,7 @@ def approve_task(task_id, user_id, amount):
     task_ref = db.collection('tasks').document(task_id)
     t_data = task_ref.get().to_dict()
     if t_data and t_data['status'] == 'pending':
-        task_ref.update({"status": "approved", "approved_at": datetime.now()})
+        task_ref.update({"status": "approved", "approved_at": datetime.now(BD_TZ)})
         db.collection('users').document(str(user_id)).update({
             "balance": firestore.Increment(amount),
             "total_tasks": firestore.Increment(1)
@@ -589,10 +600,16 @@ def run_automation():
             
             for app in apps:
                 try:
+                    # Google Play Scraper returns times generally in UTC or local to server
+                    # We handle logic carefully here
                     reviews, _ = play_reviews(app['id'], count=10, sort=Sort.NEWEST)
                     for r in reviews:
                         rid = r['reviewId']
-                        r_date = r['at']
+                        r_date = r['at'] 
+                        # Comparison: Ensure r_date is offset-naive or aware matching server time
+                        # Usually scraper returns naive datetime. 
+                        # We use simple subtraction assuming server time sync
+                        
                         if r_date < datetime.now() - timedelta(hours=48):
                             continue
                         
@@ -610,7 +627,7 @@ def run_automation():
                                 f"🤖 AI Mood: {ai_txt}"
                             )
                             send_telegram_message(msg, chat_id=log_id)
-                            db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
+                            db.collection('seen_reviews').document(rid).set({"t": datetime.now(BD_TZ)})
 
                             if r['score'] == 5:
                                 p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
@@ -680,7 +697,7 @@ async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("📜 All Time History", callback_data="rep_all")],
         [InlineKeyboardButton("📅 Last 7 Days", callback_data="rep_7d")],
         [InlineKeyboardButton("🕒 Last 24 Hours", callback_data="rep_24h")],
-        [InlineKeyboardButton("📱 By Specific App", callback_data="rep_apps")], # NEW
+        [InlineKeyboardButton("📱 By Specific App", callback_data="rep_apps")], 
         [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
     ]
     await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -706,7 +723,7 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer("Generating report... Please wait.")
     
     mode = query.data
-    now = datetime.now()
+    now = datetime.now(BD_TZ) # BD Time
     cutoff_date = None
     target_app_id = None
     file_prefix = "All_Time"
@@ -735,11 +752,17 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         approved_at = t_data.get('approved_at')
         
         if approved_at:
+            # Timestamp handling for timezone conversion
+            dt_obj = approved_at
+            if dt_obj.tzinfo is None:
+                dt_obj = pytz.utc.localize(dt_obj).astimezone(BD_TZ)
+            else:
+                dt_obj = dt_obj.astimezone(BD_TZ)
+            
             if cutoff_date:
-                # Handle timezone naive comparison
-                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
+                if dt_obj < cutoff_date:
                     continue
-            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
+            date_str = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
         else:
             date_str = "N/A"
             if cutoff_date: continue
@@ -762,7 +785,7 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
+    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date (BD Time)"])
     writer.writerows(data_rows)
     
     output.seek(0)
@@ -1185,8 +1208,8 @@ def main():
     
     # --- HANDLERS FOR REPORTS ---
     application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
-    application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$")) # NEW
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|rep_app_.*)$")) # UPDATED
+    application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$")) 
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|rep_app_.*)$")) 
     # --------------------------------
 
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
