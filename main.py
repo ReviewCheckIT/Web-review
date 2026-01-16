@@ -277,8 +277,8 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "show_schedule":
         config = get_config()
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%I:%M %p").strftime("%H:%M")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%I:%M %p").strftime("%H:%M")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
         msg = (
             f"📅 **সময়সূচী:**\n\n"
