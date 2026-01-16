@@ -148,7 +148,7 @@ def is_working_hour():
         
         if start < end:
             return start <= now <= end
-        else: # Crosses midnight (e.g. 10 PM to 2 AM)
+        else: # Crosses midnight (e.g. 03:30 PM to 11:00 PM)
             return now >= start or now <= end
     except:
         return True # Fallback if time format error
@@ -277,8 +277,8 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "show_schedule":
         config = get_config()
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%I:%M %p").strftime("%H:%M")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%I:%M %p").strftime("%H:%M")
         
         msg = (
             f"📅 **সময়সূচী:**\n\n"
@@ -420,8 +420,8 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
     
     # --- TIME CHECK START ---
     if not is_working_hour():
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%I:%M %p").strftime("%H:%M")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%I:%M %p").strftime("%H:%M")
         
         await query.edit_message_text(
             f"⛔ **এখন কাজের সময় নয়!**\n\n"
