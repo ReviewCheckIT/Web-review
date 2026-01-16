@@ -6,7 +6,7 @@ import time
 import asyncio
 import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # ENV ভেরিয়েবল
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-OWNER_ID = os.environ.get("OWNER_ID", "") # মেইন মালিকের আইডি
+OWNER_ID = os.environ.get("OWNER_ID", "") 
 FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
@@ -81,6 +81,8 @@ DEFAULT_CONFIG = {
     "min_withdraw": 50.0,
     "monitored_apps": [],
     "log_channel_id": "",
+    "work_start_time": "10:00", # 24H Format
+    "work_end_time": "22:00",   # 24H Format
     "rules_text": "⚠️ কাজের নিয়ম: সঠিকভাবে রিভিউ দিন এবং স্ক্রিনশট জমা দিন।",
     "schedule_text": "⏰ কাজের সময়: সকাল ১০টা থেকে রাত ১০টা।",
     "buttons": {
@@ -104,8 +106,9 @@ DEFAULT_CONFIG = {
     ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        # 17-18
     ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         # 19-20
     ADMIN_SET_LOG_CHANNEL,                                          # 21
-    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID                          # 22-23
-) = range(23)
+    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 22-23
+    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME                        # 24-25 (New for Time Settings)
+) = range(26)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
@@ -132,6 +135,23 @@ def update_config(data):
         db.collection('settings').document('main_config').set(data, merge=True)
     except Exception as e:
         logger.error(f"Config Update Error: {e}")
+
+def is_working_hour():
+    config = get_config()
+    start_str = config.get("work_start_time", "10:00")
+    end_str = config.get("work_end_time", "22:00")
+    
+    try:
+        now = datetime.now().time()
+        start = datetime.strptime(start_str, "%H:%M").time()
+        end = datetime.strptime(end_str, "%H:%M").time()
+        
+        if start < end:
+            return start <= now <= end
+        else: # Crosses midnight (e.g. 10 PM to 2 AM)
+            return now >= start or now <= end
+    except:
+        return True # Fallback if time format error
 
 def is_admin(user_id):
     if str(user_id) == str(OWNER_ID): return True
@@ -257,7 +277,17 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "show_schedule":
         config = get_config()
-        await query.edit_message_text(f"📅 **সময়সূচী:**\n\n{config.get('schedule_text', 'No info')}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+        s_time = datetime.strptime(config.get('work_start_time', '10:00'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '22:00'), "%H:%M").strftime("%I:%M %p")
+        
+        msg = (
+            f"📅 **সময়সূচী:**\n\n"
+            f"{config.get('schedule_text', '')}\n\n"
+            f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
+            f"শুরু: `{s_time}`\n"
+            f"শেষ: `{e_time}`"
+        )
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
 
 # --- Withdrawal System ---
 
@@ -386,8 +416,23 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
 async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     config = get_config()
+    
+    # --- TIME CHECK START ---
+    if not is_working_hour():
+        s_time = datetime.strptime(config.get('work_start_time', '10:00'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '22:00'), "%H:%M").strftime("%I:%M %p")
+        
+        await query.edit_message_text(
+            f"⛔ **এখন কাজের সময় নয়!**\n\n"
+            f"⏰ কাজের সময়: `{s_time}` থেকে `{e_time}` পর্যন্ত।\n"
+            f"অনুগ্রহ করে নির্দিষ্ট সময়ে চেষ্টা করুন।",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
+        return ConversationHandler.END
+    # --- TIME CHECK END ---
+
     apps = config.get('monitored_apps', [])
     
     if not apps:
@@ -613,15 +658,13 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
         [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("👮 Manage Admins", callback_data="adm_admins")],
-        [InlineKeyboardButton("🎨 Buttons & Text", callback_data="adm_content"), InlineKeyboardButton("📢 Log Channel", callback_data="adm_log")],
-        # --- NEW REPORT BUTTON HERE ---
+        [InlineKeyboardButton("🎨 Buttons & Time", callback_data="adm_content"), InlineKeyboardButton("📢 Log Channel", callback_data="adm_log")],
         [InlineKeyboardButton("📊 Reports & Export", callback_data="adm_reports")],
-        # ------------------------------
         [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- NEW REPORT HANDLING FUNCTIONS ---
+# --- REPORT HANDLING FUNCTIONS (UPDATED) ---
 
 async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -637,9 +680,26 @@ async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("📜 All Time History", callback_data="rep_all")],
         [InlineKeyboardButton("📅 Last 7 Days", callback_data="rep_7d")],
         [InlineKeyboardButton("🕒 Last 24 Hours", callback_data="rep_24h")],
+        [InlineKeyboardButton("📱 By Specific App", callback_data="rep_apps")], # NEW
         [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
     ]
     await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+async def admin_reports_apps_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    config = get_config()
+    apps = config.get('monitored_apps', [])
+    
+    if not apps:
+        await query.answer("No apps found!", show_alert=True)
+        return
+        
+    kb = []
+    for app in apps:
+        kb.append([InlineKeyboardButton(f"📄 Report: {app['name']}", callback_data=f"rep_app_{app['id']}")])
+        
+    kb.append([InlineKeyboardButton("🔙 Back to Reports", callback_data="adm_reports")])
+    await query.edit_message_text("📊 Select App to download report:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -648,6 +708,7 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     mode = query.data
     now = datetime.now()
     cutoff_date = None
+    target_app_id = None
     file_prefix = "All_Time"
     
     if mode == "rep_7d":
@@ -656,9 +717,15 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif mode == "rep_24h":
         cutoff_date = now - timedelta(hours=24)
         file_prefix = "Last_24_Hours"
+    elif mode.startswith("rep_app_"):
+        target_app_id = mode.split("rep_app_")[1]
+        file_prefix = f"App_{target_app_id}"
         
     # Fetch Approved Tasks
-    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
+    if target_app_id:
+        tasks_ref = db.collection('tasks').where('status', '==', 'approved').where('app_id', '==', target_app_id).stream()
+    else:
+        tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
     
     # Prepare Data List
     data_rows = []
@@ -667,23 +734,15 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         t_data = t.to_dict()
         approved_at = t_data.get('approved_at')
         
-        # Handle datetime conversion if stored as Firestore Timestamp
         if approved_at:
-            # Note: Firestore returns datetime with timezone info usually
-            # We make it offset-naive for simple comparison or just compare directly
-            # Here we assume standard python datetime object
-            
-            # If filtering is required
             if cutoff_date:
-                # Ensure both are offset-naive or offset-aware to avoid errors
-                # Simple fix: Convert firestore time to local simple time if needed
+                # Handle timezone naive comparison
                 if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
                     continue
-            
             date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
         else:
             date_str = "N/A"
-            if cutoff_date: continue # Skip if no date and filter is on
+            if cutoff_date: continue
 
         data_rows.append([
             t.id,
@@ -698,20 +757,15 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ])
     
     if not data_rows:
-        await query.message.reply_text("❌ No data found for this period.")
+        await query.message.reply_text("❌ No data found for this selection.")
         return
 
-    # Create CSV in Memory
     output = io.StringIO()
     writer = csv.writer(output)
-    # Header
     writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
-    # Rows
     writer.writerows(data_rows)
     
-    # Send File
     output.seek(0)
-    # Need to convert StringIO to BytesIO for Telegram API
     byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
     
     filename = f"Report_{file_prefix}_{now.strftime('%Y%m%d')}.csv"
@@ -775,12 +829,17 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         
     elif data == "adm_content":
+        config = get_config()
+        st = config.get("work_start_time", "10:00")
+        et = config.get("work_end_time", "22:00")
+        
         kb = [
+            [InlineKeyboardButton(f"⏰ Start: {st}", callback_data="set_time_start"), InlineKeyboardButton(f"⏰ End: {et}", callback_data="set_time_end")],
             [InlineKeyboardButton("📝 Edit Rules Text", callback_data="ed_txt_rules"), InlineKeyboardButton("⏰ Edit Schedule Text", callback_data="ed_txt_schedule")],
             [InlineKeyboardButton("🔘 Button Names/Visibility", callback_data="ed_btns"), InlineKeyboardButton("➕ Add Custom Button", callback_data="add_cus_btn")],
             [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
         ]
-        await query.edit_message_text("🎨 **Content Management**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text("🎨 **Content & Time Settings**\nSet Working Hours (24H Format)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data == "adm_admins":
         kb = [
@@ -850,6 +909,37 @@ async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_config({"log_channel_id": cid})
     await update.message.reply_text(f"✅ Log Channel Set to `{cid}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
+
+# --- TIME SETTING HANDLERS ---
+
+async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 10:00 or 08:30):")
+    return ADMIN_SET_START_TIME
+
+async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t_str = update.message.text.strip()
+    try:
+        datetime.strptime(t_str, "%H:%M")
+        update_config({"work_start_time": t_str})
+        await update.message.reply_text(f"✅ Start Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 10:00).")
+    return ConversationHandler.END
+
+async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 22:00 or 20:30):")
+    return ADMIN_SET_END_TIME
+
+async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t_str = update.message.text.strip()
+    try:
+        datetime.strptime(t_str, "%H:%M")
+        update_config({"work_end_time": t_str})
+        await update.message.reply_text(f"✅ End Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 22:00).")
+    return ConversationHandler.END
+
 
 # --- Existing Admin Functions ---
 
@@ -922,7 +1012,7 @@ async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE
         final_amt = amount if action == "add" else -amount
         db.collection('users').document(uid).update({"balance": firestore.Increment(final_amt)})
         
-        await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deducted'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deduct'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     except:
         await update.message.reply_text("❌ Invalid Amount.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
@@ -1090,12 +1180,13 @@ def main():
     application.add_handler(CommandHandler("start", start))
     
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    # Updated patterns for new admin features AND new report handler
+    
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log)$"))
     
-    # --- NEW HANDLERS FOR REPORTS ---
+    # --- HANDLERS FOR REPORTS ---
     application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
+    application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$")) # NEW
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|rep_app_.*)$")) # UPDATED
     # --------------------------------
 
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
@@ -1171,6 +1262,20 @@ def main():
         },
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
+
+    # --- TIME SETTING CONVERSATIONS ---
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
+        states={ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+    
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_time_end_handler, pattern="^set_time_end$")],
+        states={ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+    # ----------------------------------
 
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
