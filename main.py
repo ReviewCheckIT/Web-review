@@ -81,10 +81,10 @@ DEFAULT_CONFIG = {
     "min_withdraw": 50.0,
     "monitored_apps": [],
     "log_channel_id": "",
-    "work_start_time": "10:00", # 24H Format
-    "work_end_time": "22:00",   # 24H Format
-    "rules_text": "⚠️ কাজের নিয়ম: সঠিকভাবে রিভিউ দিন এবং স্ক্রিনশট জমা দিন।",
-    "schedule_text": "⏰ কাজের সময়: সকাল ১০টা থেকে রাত ১০টা।",
+    "work_start_time": "15:30", # 24H Format
+    "work_end_time": "23:00",   # 24H Format
+    "rules_text": "⚠️ কাজের নিয়ম: ভিডিওতে দেখানো হয়েছে ভিডিওটি দেখে নিন।",
+    "schedule_text": "⏰ কাজের সময়: বিকেল 03:30 PM To 11:00 PM।",
     "buttons": {
         "submit": {"text": "💰 কাজ জমা দিন", "show": True},
         "profile": {"text": "👤 প্রোফাইল", "show": True},
@@ -138,8 +138,8 @@ def update_config(data):
 
 def is_working_hour():
     config = get_config()
-    start_str = config.get("work_start_time", "10:00")
-    end_str = config.get("work_end_time", "22:00")
+    start_str = config.get("work_start_time", "15:30")
+    end_str = config.get("work_end_time", "23:00")
     
     try:
         now = datetime.now().time()
@@ -277,8 +277,8 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "show_schedule":
         config = get_config()
-        s_time = datetime.strptime(config.get('work_start_time', '10:00'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '22:00'), "%H:%M").strftime("%I:%M %p")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
         msg = (
             f"📅 **সময়সূচী:**\n\n"
@@ -420,8 +420,8 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
     
     # --- TIME CHECK START ---
     if not is_working_hour():
-        s_time = datetime.strptime(config.get('work_start_time', '10:00'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '22:00'), "%H:%M").strftime("%I:%M %p")
+        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
+        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
         await query.edit_message_text(
             f"⛔ **এখন কাজের সময় নয়!**\n\n"
@@ -472,7 +472,7 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['dev'] = update.message.text
-    await update.message.reply_text("স্ক্রিনশট এর লিংক বা টেক্সট দিন:")
+    await update.message.reply_text("স্ক্রিনশট এর লিংক দিন:")
     return T_SS
 
 async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -913,7 +913,7 @@ async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- TIME SETTING HANDLERS ---
 
 async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 10:00 or 08:30):")
+    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 15:30 or 23:00):")
     return ADMIN_SET_START_TIME
 
 async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -923,11 +923,11 @@ async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE
         update_config({"work_start_time": t_str})
         await update.message.reply_text(f"✅ Start Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 10:00).")
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 15:30).")
     return ConversationHandler.END
 
 async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 22:00 or 20:30):")
+    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 23:00 or 15:30):")
     return ADMIN_SET_END_TIME
 
 async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -937,7 +937,7 @@ async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_config({"work_end_time": t_str})
         await update.message.reply_text(f"✅ End Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 22:00).")
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 23:00).")
     return ConversationHandler.END
 
 
