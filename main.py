@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "task_price": 20.0,
     "referral_bonus": 5.0,
     "min_withdraw": 50.0,
-    "monitored_apps": [], # Structure: {id, name, limit}
+    "monitored_apps": [],
     "log_channel_id": "",
     "work_start_time": "15:30", # 24H Format
     "work_end_time": "23:00",   # 24H Format
@@ -121,7 +121,6 @@ def get_config():
         doc = ref.get()
         if doc.exists:
             data = doc.to_dict()
-            # Ensure defaults
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
@@ -138,22 +137,30 @@ def update_config(data):
     except Exception as e:
         logger.error(f"Config Update Error: {e}")
 
+# --- TIMEZONE FIX HERE ---
+def get_bd_time():
+    """Returns current time in Bangladesh (UTC+6)"""
+    return datetime.utcnow() + timedelta(hours=6)
+
 def is_working_hour():
     config = get_config()
     start_str = config.get("work_start_time", "15:30")
     end_str = config.get("work_end_time", "23:00")
     
     try:
-        now = datetime.now().time()
+        # Fixed: Using Bangladesh Time (UTC+6)
+        now = get_bd_time().time()
+        
         start = datetime.strptime(start_str, "%H:%M").time()
         end = datetime.strptime(end_str, "%H:%M").time()
         
         if start < end:
             return start <= now <= end
-        else: # Crosses midnight
+        else: # Crosses midnight (e.g. 03:30 PM to 01:00 AM)
             return now >= start or now <= end
-    except:
-        return True 
+    except Exception as e:
+        logger.error(f"Time Check Error: {e}")
+        return True # Fallback allowed if error
 
 def is_admin(user_id):
     if str(user_id) == str(OWNER_ID): return True
@@ -204,14 +211,9 @@ def get_ai_summary(text, rating):
     except: return "N/A"
 
 def get_app_task_count(app_id):
-    # Count approved and pending tasks for limit check
-    # Note: Firestore count queries are efficient
     try:
-        # Count Pending
         pending = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'pending').stream()
-        # Count Approved
         approved = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'approved').stream()
-        
         count = len(list(pending)) + len(list(approved))
         return count
     except Exception as e:
@@ -255,7 +257,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     row3 = []
     if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
-    # NEW REFRESH BUTTON
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
     if row3: keyboard.append(row3)
 
@@ -430,7 +431,7 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"❌ Rejected & Refunded for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", parse_mode="Markdown")
         await context.bot.send_message(chat_id=user_id, text=f"❌ আপনার ৳{amount:.2f} উইথড্র বাতিল হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।")
 
-# --- Task Submission System (Updated for Limit) ---
+# --- Task Submission System (Updated for Limit & Timezone) ---
 
 async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -442,8 +443,12 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
         s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
         e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
+        # Get Current BD Time for display
+        curr_bd_time = get_bd_time().strftime("%I:%M %p")
+        
         await query.edit_message_text(
             f"⛔ **এখন কাজের সময় নয়!**\n\n"
+            f"🕒 বর্তমান সময়: `{curr_bd_time}`\n"
             f"⏰ কাজের সময়: `{s_time}` থেকে `{e_time}` পর্যন্ত।\n"
             f"অনুগ্রহ করে নির্দিষ্ট সময়ে চেষ্টা করুন।",
             parse_mode="Markdown",
@@ -460,8 +465,7 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
         
     buttons = []
     for app in apps:
-        # Check limit
-        limit = app.get('limit', 1000) # Default large limit if not set
+        limit = app.get('limit', 1000)
         count = get_app_task_count(app['id'])
         
         btn_text = f"📱 {app['name']} ({count}/{limit}) - ৳{config['task_price']:.0f}"
@@ -489,7 +493,6 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ অ্যাপটি খুঁজে পাওয়া যায়নি।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
         return ConversationHandler.END
         
-    # Check limit one more time to be safe
     limit = app.get('limit', 1000)
     count = get_app_task_count(app_id)
     
@@ -745,7 +748,6 @@ async def admin_reports_apps_selection(update: Update, context: ContextTypes.DEF
         
     kb = []
     for app in apps:
-        # Changed callback to go to timeframe selection
         kb.append([InlineKeyboardButton(f"📄 Report: {app['name']}", callback_data=f"sel_rep_app_{app['id']}")])
         
     kb.append([InlineKeyboardButton("🔙 Back to Reports", callback_data="adm_reports")])
@@ -793,7 +795,6 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             cutoff_date = now - timedelta(hours=24)
         elif time_mode == "7d":
             cutoff_date = now - timedelta(days=7)
-        # else all time (no cutoff)
         
     # Fetch Approved Tasks
     if target_app_id:
@@ -810,7 +811,6 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         if approved_at:
             if cutoff_date:
-                # Handle timezone naive comparison
                 if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
                     continue
             date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -908,7 +908,7 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg = f"📱 **App Management**\n\n**Current Apps:**\n{apps_list}"
         kb = [
             [InlineKeyboardButton("➕ Add App", callback_data="add_app"), InlineKeyboardButton("➖ Remove App", callback_data="rmv_app")],
-            [InlineKeyboardButton("✏️ Edit App Limit", callback_data="edit_app_limit_start")], # New Button
+            [InlineKeyboardButton("✏️ Edit App Limit", callback_data="edit_app_limit_start")],
             [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
         ]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
