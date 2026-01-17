@@ -109,7 +109,7 @@ DEFAULT_CONFIG = {
     ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 23-24
     ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       # 25-26
     EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL                             # 27-28 (New)
-) = range(29)
+) = range(28)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
