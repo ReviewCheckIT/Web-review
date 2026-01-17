@@ -45,6 +45,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 OWNER_ID = os.environ.get("OWNER_ID", "") 
 FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
+IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "") # New ImgBB Key
 PORT = int(os.environ.get("PORT", 8080))
 
 # Gemini AI সেটআপ
@@ -98,7 +99,7 @@ DEFAULT_CONFIG = {
 # Conversation States
 (
     T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 1-5
-    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,                        # 6-8 (Updated)
+    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,                        # 6-8
     WD_METHOD, WD_NUMBER, WD_AMOUNT,                                # 9-11
     REMOVE_APP_SELECT,                                              # 12
     ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        # 13-15
@@ -108,7 +109,7 @@ DEFAULT_CONFIG = {
     ADMIN_SET_LOG_CHANNEL,                                          # 22
     ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 23-24
     ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       # 25-26
-    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL                             # 27-28 (New)
+    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL                             # 27-28
 ) = range(28)
 
 # ==========================================
@@ -137,7 +138,6 @@ def update_config(data):
     except Exception as e:
         logger.error(f"Config Update Error: {e}")
 
-# --- TIMEZONE FIX HERE ---
 def get_bd_time():
     """Returns current time in Bangladesh (UTC+6)"""
     return datetime.utcnow() + timedelta(hours=6)
@@ -148,19 +148,17 @@ def is_working_hour():
     end_str = config.get("work_end_time", "23:00")
     
     try:
-        # Fixed: Using Bangladesh Time (UTC+6)
         now = get_bd_time().time()
-        
         start = datetime.strptime(start_str, "%H:%M").time()
         end = datetime.strptime(end_str, "%H:%M").time()
         
         if start < end:
             return start <= now <= end
-        else: # Crosses midnight (e.g. 03:30 PM to 01:00 AM)
+        else: # Crosses midnight
             return now >= start or now <= end
     except Exception as e:
         logger.error(f"Time Check Error: {e}")
-        return True # Fallback allowed if error
+        return True 
 
 def is_admin(user_id):
     if str(user_id) == str(OWNER_ID): return True
@@ -431,7 +429,7 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"❌ Rejected & Refunded for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", parse_mode="Markdown")
         await context.bot.send_message(chat_id=user_id, text=f"❌ আপনার ৳{amount:.2f} উইথড্র বাতিল হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।")
 
-# --- Task Submission System (Updated for Limit & Timezone) ---
+# --- Task Submission System ---
 
 async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -443,7 +441,6 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
         s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
         e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
         
-        # Get Current BD Time for display
         curr_bd_time = get_bd_time().strftime("%I:%M %p")
         
         await query.edit_message_text(
@@ -524,14 +521,58 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['dev'] = update.message.text
-    await update.message.reply_text("স্ক্রিনশট এর লিংক দিন:")
+    await update.message.reply_text("স্ক্রিনশট এর লিংক দিন অথবা সরাসরি ছবি আপলোড করুন:")
     return T_SS
 
+# --- UPDATED SAVE TASK FUNCTION WITH IMGBB UPLOAD ---
 async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     config = get_config()
     user = update.effective_user
     
+    screenshot_link = ""
+    
+    # 1. Handle Photo Upload
+    if update.message.photo:
+        wait_msg = await update.message.reply_text("📤 ছবি আপলোড হচ্ছে... অনুগ্রহ করে অপেক্ষা করুন।")
+        try:
+            # Get largest photo
+            photo = await update.message.photo[-1].get_file()
+            img_bytes = io.BytesIO()
+            await photo.download_to_memory(img_bytes)
+            img_bytes.seek(0)
+            
+            # Upload to ImgBB
+            if IMGBB_API_KEY:
+                files = {'image': img_bytes}
+                payload = {'key': IMGBB_API_KEY}
+                response = requests.post("https://api.imgbb.com/1/upload", data=payload, files=files)
+                result = response.json()
+                
+                if result.get('success'):
+                    screenshot_link = result['data']['url']
+                else:
+                    await wait_msg.edit_text("❌ ছবি আপলোড ব্যর্থ হয়েছে। আবার চেষ্টা করুন বা লিংক দিন।")
+                    return T_SS
+            else:
+                await wait_msg.edit_text("❌ ImgBB API Key কনফিগার করা নেই। এডমিনের সাথে যোগাযোগ করুন।")
+                return ConversationHandler.END
+                
+            await wait_msg.delete()
+        except Exception as e:
+            logger.error(f"Image Upload Error: {e}")
+            await wait_msg.edit_text("❌ টেকনিক্যাল সমস্যা হয়েছে। আবার চেষ্টা করুন।")
+            return ConversationHandler.END
+
+    # 2. Handle Text Link
+    elif update.message.text:
+        screenshot_link = update.message.text.strip()
+    
+    else:
+        await update.message.reply_text("❌ অনুগ্রহ করে ছবি বা লিংক দিন।")
+        return T_SS
+
+    # Save to Database
     app_name = next((a['name'] for a in config['monitored_apps'] if a['id'] == data['tid']), data['tid'])
     
     task_ref = db.collection('tasks').add({
@@ -540,7 +581,7 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "review_name": data['rname'],
         "email": data['email'],
         "device": data['dev'],
-        "screenshot": update.message.text,
+        "screenshot": screenshot_link,
         "status": "pending",
         "submitted_at": datetime.now(),
         "price": config['task_price']
@@ -555,7 +596,7 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✍️ Name: {data['rname']}\n"
         f"📧 Email: {data['email']}\n"
         f"📱 Device: {data['dev']}\n"
-        f"🖼 Proof: [Link/Text]({update.message.text})\n"
+        f"🖼 Proof: [View Screenshot]({screenshot_link})\n"
         f"💰 Price: ৳{config['task_price']:.2f}"
     )
     
@@ -716,7 +757,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- REPORT HANDLING FUNCTIONS (UPDATED FOR TIMEFRAMES) ---
+# --- REPORT HANDLING FUNCTIONS ---
 
 async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -775,7 +816,6 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     target_app_id = None
     file_prefix = "Report"
     
-    # Parse Logic
     if data_code == "rep_7d":
         cutoff_date = now - timedelta(days=7)
         file_prefix = "All_Apps_7Days"
@@ -796,13 +836,11 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif time_mode == "7d":
             cutoff_date = now - timedelta(days=7)
         
-    # Fetch Approved Tasks
     if target_app_id:
         tasks_ref = db.collection('tasks').where('status', '==', 'approved').where('app_id', '==', target_app_id).stream()
     else:
         tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
     
-    # Prepare Data List
     data_rows = []
     
     for t in tasks_ref:
@@ -1025,7 +1063,6 @@ async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 23:00).")
     return ConversationHandler.END
 
-
 # --- Existing Admin Functions ---
 
 async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1196,7 +1233,7 @@ async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
 
-# --- APP MANAGEMENT (Updated with LIMIT) ---
+# --- APP MANAGEMENT ---
 
 async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("App Package ID (e.g. com.example.app):")
@@ -1262,8 +1299,6 @@ async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Error during removal.")
         
     return ConversationHandler.END
-
-# --- NEW: EDIT APP LIMIT ---
 
 async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = get_config()
@@ -1334,8 +1369,8 @@ def main():
     # --- HANDLERS FOR REPORTS ---
     application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
     application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$"))
-    application.add_handler(CallbackQueryHandler(admin_show_app_timeframes, pattern="^sel_rep_app_")) # NEW Intermediate Step
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|repex_.*)$")) # UPDATED Logic
+    application.add_handler(CallbackQueryHandler(admin_show_app_timeframes, pattern="^sel_rep_app_"))
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|repex_.*)$"))
     # --------------------------------
 
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
@@ -1344,6 +1379,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
     application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^t_(apr|rej)_"))
 
+    # --- UPDATED CONVERSATION HANDLER FOR TASK ---
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_task_submission, pattern="^submit_task$")],
         states={
@@ -1351,10 +1387,12 @@ def main():
             T_REVIEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_name)],
             T_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
             T_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_device)],
-            T_SS: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_task)]
+            # Allow TEXT (link) OR PHOTO (upload)
+            T_SS: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, save_task)]
         },
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
+    # ---------------------------------------------
     
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_start, pattern="^start_withdraw$")],
@@ -1366,7 +1404,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
     
-    # --- UPDATED APP ADD HANDLER ---
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_app_start, pattern="^add_app$")],
         states={
@@ -1377,7 +1414,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
     
-    # --- NEW APP EDIT LIMIT HANDLER ---
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_app_limit_start, pattern="^edit_app_limit_start$")],
         states={
@@ -1424,7 +1460,6 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
-    # --- TIME SETTING CONVERSATIONS ---
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
         states={ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]},
@@ -1436,7 +1471,6 @@ def main():
         states={ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]},
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
-    # ----------------------------------
 
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
