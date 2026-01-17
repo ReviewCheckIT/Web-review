@@ -14,6 +14,7 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 )
 from telegram.constants import ParseMode
+from telegram.error import BadRequest  # Error fix import
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler,
     MessageHandler, filters, ConversationHandler
@@ -45,7 +46,7 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 OWNER_ID = os.environ.get("OWNER_ID", "") 
 FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
-IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "") # New ImgBB Key
+IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "") # ImgBB API Key
 PORT = int(os.environ.get("PORT", 8080))
 
 # Gemini AI সেটআপ
@@ -230,7 +231,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db_user = get_user(user.id)
     if db_user and db_user.get('is_blocked'):
-        await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
+        if update.callback_query:
+            await update.callback_query.answer("⛔ আপনাকে ব্লক করা হয়েছে।", show_alert=True)
+        else:
+            await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
         return
 
     config = get_config()
@@ -269,7 +273,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
-        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
+        # --- FIX: Message not modified error handler ---
+        try:
+            await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                logger.error(f"Start Error: {e}")
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -277,35 +288,39 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "back_home":
-        await start(update, context)
+    try:
+        if query.data == "back_home":
+            await start(update, context)
+            
+        elif query.data == "my_profile":
+            user = get_user(query.from_user.id)
+            if user:
+                msg = f"👤 **প্রোফাইল**\n\n🆔 ID: `{user['id']}`\n💰 ব্যালেন্স: ৳{user['balance']:.2f}\n✅ সম্পন্ন টাস্ক: {user['total_tasks']}"
+            else:
+                msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
+            await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+            
+        elif query.data == "refer_friend":
+            config = get_config()
+            link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
+            await query.edit_message_text(f"📢 **রেফার লিংক:**\n`{link}`\n\nপ্রতি রেফারে বোনাস: ৳{config['referral_bonus']}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
         
-    elif query.data == "my_profile":
-        user = get_user(query.from_user.id)
-        if user:
-            msg = f"👤 **প্রোফাইল**\n\n🆔 ID: `{user['id']}`\n💰 ব্যালেন্স: ৳{user['balance']:.2f}\n✅ সম্পন্ন টাস্ক: {user['total_tasks']}"
-        else:
-            msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
-        
-    elif query.data == "refer_friend":
-        config = get_config()
-        link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
-        await query.edit_message_text(f"📢 **রেফার লিংক:**\n`{link}`\n\nপ্রতি রেফারে বোনাস: ৳{config['referral_bonus']}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
-    
-    elif query.data == "show_schedule":
-        config = get_config()
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
-        
-        msg = (
-            f"📅 **সময়সূচী:**\n\n"
-            f"{config.get('schedule_text', '')}\n\n"
-            f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
-            f"শুরু: `{s_time}`\n"
-            f"শেষ: `{e_time}`"
-        )
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+        elif query.data == "show_schedule":
+            config = get_config()
+            s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
+            e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
+            
+            msg = (
+                f"📅 **সময়সূচী:**\n\n"
+                f"{config.get('schedule_text', '')}\n\n"
+                f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
+                f"শুরু: `{s_time}`\n"
+                f"শেষ: `{e_time}`"
+            )
+            await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+    except BadRequest as e:
+        if "Message is not modified" in str(e): pass
+        else: logger.error(f"Callback Error: {e}")
 
 # --- Withdrawal System ---
 
