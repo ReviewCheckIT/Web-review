@@ -110,8 +110,9 @@ DEFAULT_CONFIG = {
     ADMIN_SET_LOG_CHANNEL,                                          # 22
     ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 23-24
     ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       # 25-26
-    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL                             # 27-28
-) = range(28)
+    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,                            # 27-28
+    REMOVE_CUS_BTN                                                  # 29 (New Added)
+) = range(29)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
@@ -974,7 +975,8 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         kb = [
             [InlineKeyboardButton(f"⏰ Start: {st}", callback_data="set_time_start"), InlineKeyboardButton(f"⏰ End: {et}", callback_data="set_time_end")],
             [InlineKeyboardButton("📝 Edit Rules Text", callback_data="ed_txt_rules"), InlineKeyboardButton("⏰ Edit Schedule Text", callback_data="ed_txt_schedule")],
-            [InlineKeyboardButton("🔘 Button Names/Visibility", callback_data="ed_btns"), InlineKeyboardButton("➕ Add Custom Button", callback_data="add_cus_btn")],
+            [InlineKeyboardButton("🔘 Button Names/Visibility", callback_data="ed_btns")],
+            [InlineKeyboardButton("➕ Add Custom Button", callback_data="add_cus_btn"), InlineKeyboardButton("➖ Remove Custom Button", callback_data="rmv_cus_btn")],
             [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
         ]
         await query.edit_message_text("🎨 **Content & Time Settings**\nSet Working Hours (24H Format)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -1248,6 +1250,50 @@ async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     return ConversationHandler.END
 
+# --- REMOVE CUSTOM BUTTON FUNCTIONS ---
+
+async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config = get_config()
+    c_btns = config.get('custom_buttons', [])
+    
+    if not c_btns:
+        await update.callback_query.answer("❌ কোনো কাস্টম বাটন পাওয়া যায়নি!", show_alert=True)
+        return ConversationHandler.END
+
+    kb = []
+    for i, btn in enumerate(c_btns):
+        kb.append([InlineKeyboardButton(f"🗑️ {btn['text']}", callback_data=f"rm_cus_btn_{i}")])
+    
+    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    
+    await update.callback_query.edit_message_text("কোন বাটনটি রিমুভ করতে চান?", reply_markup=InlineKeyboardMarkup(kb))
+    return REMOVE_CUS_BTN
+
+async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.data == "cancel": return await cancel_conv(update, context)
+
+    try:
+        # Get index from data (rm_cus_btn_0 -> 0)
+        idx = int(query.data.split("rm_cus_btn_")[1])
+        config = get_config()
+        c_btns = config.get('custom_buttons', [])
+
+        if 0 <= idx < len(c_btns):
+            removed_name = c_btns[idx]['text']
+            del c_btns[idx] # Remove from list
+            update_config({"custom_buttons": c_btns}) # Update DB
+            
+            await query.edit_message_text(f"✅ বাটন '{removed_name}' রিমুভ করা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        else:
+            await query.edit_message_text("❌ বাটন খুঁজে পাওয়া যায়নি।")
+            
+    except Exception as e:
+        logger.error(f"Remove Custom Btn Error: {e}")
+        await query.edit_message_text("❌ এরর হয়েছে।")
+
+    return ConversationHandler.END
+
 # --- APP MANAGEMENT ---
 
 async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1471,6 +1517,15 @@ def main():
         states={
             ADMIN_ADD_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_link)],
             ADMIN_ADD_BTN_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # --- NEW REMOVE BUTTON HANDLER ---
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(rmv_custom_btn_start, pattern="^rmv_cus_btn$")],
+        states={
+            REMOVE_CUS_BTN: [CallbackQueryHandler(rmv_custom_btn_handle, pattern="^rm_cus_btn_")]
         },
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
